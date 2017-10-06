@@ -1,8 +1,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-
-import sys, os
+import sys, os, webbrowser
 import shippo, yaml
 from pathlib import Path
 from whaaaaat import prompt, print_json
@@ -11,26 +10,57 @@ try:
 except ImportError:
     from yaml import Loader
 
-MAX_TRANSIT_TIME_DAYS = 7
+assert sys.version_info >= (3,2)
+
+def print_clean_json(aObj):
+  print_json({k: v for k, v in aObj.items() if v is not "" and not None})
 
 def prompt_to_continue(aMessage):
+  """
+  Return True if the user wants to continue
+  """
   answers = prompt([
     {'type': 'confirm', 'name': 'continue', 'message': aMessage},
   ])
-  if not answers['continue']:
-    sys.exit(0)
-
-def display_url(aUrl):
-  import subprocess
-  subprocess.call(['open', aUrl])
+  return answers['continue']
 
 def display_messages(aMessages, prompt="Are these alerts okay?", onProblem=None):
+  """
+  Return True if the user wants to continue
+  """
   if len(aMessages) > 0:
     if onProblem:
         onProblem()
     for m in aMessages:
       print("Alert: [{source}] {text} (Code={code})".format(**m))
-    prompt_to_continue(prompt)
+    return prompt_to_continue(prompt)
+
+  return True
+
+def prompt_for_address(priorAddress={}):
+  address_questions = [
+    {'type': 'input', 'name': 'name', 'message': "Name" },
+    {'type': 'input', 'name': 'street1', 'message': "Street Address" },
+    {'type': 'input', 'name': 'street2', 'message': "Street (line 2)" },
+    {'type': 'input', 'name': 'city', 'message': "City",
+      'validate': lambda s: len(s)>=2 or "City must be at least 2 letters" },
+    {'type': 'input', 'name': 'state', 'message': "State",
+      'validate': lambda s: len(s)==2 or "2 letter abbreviations" },
+    {'type': 'input', 'name': 'zip', 'message': "ZIP" },
+    {'type': 'input', 'name': 'country', 'message': "Country Code",
+      'validate': lambda s: len(s)>=2 or "Country code must be at least 2 letters" },
+    {'type': 'input', 'name': 'company', 'message': "Company" },
+    {'type': 'input', 'name': 'phone', 'message': "Phone" },
+    {'type': 'input', 'name': 'email', 'message': "E-Mail" },
+  ]
+
+  # Fill in defaults, if any
+  for q in address_questions:
+    if q['name'] in priorAddress:
+      q['default'] = priorAddress[q['name']]
+
+  address_response = prompt(address_questions)
+  return shippo.Address.create(**address_response, validate=True)
 
 def choose_rate_for_shipment(aShipmentObj):
     # Rates are stored in the `rates` array
@@ -55,10 +85,11 @@ def finish_and_offer_to_print_transaction(aTransaction):
     print("Purchased label with tracking number {}".format(aTransaction.tracking_number))
     print("The label can be downloaded at {}".format(aTransaction.label_url))
 
-    display_url(aTransaction.label_url)
+    webbrowser.open(aTransaction.label_url)
   else:
     print("Failed purchasing the label due to:")
-    display_messages(aTransaction.messages, prompt="Failed to create the label")
+    if not display_messages(aTransaction.messages, prompt="Failed to create the label"):
+      sys.exit(0)
 
 ##
 ## Main logic
@@ -91,7 +122,8 @@ with open(conf_file, "r") as conf_stream:
   try:
     config_data['from']['validate'] = True
     address_from = shippo.Address.create(**config_data['from'])
-    display_messages(address_from.validation_results.messages, "Are these sender address problems OK?")
+    if not display_messages(address_from.validation_results.messages, "Are these sender address problems OK?"):
+      sys.exit(0)
   except:
     print("The config file [{}] does not contain the sender's address under the heading of 'from'".format(conf_file))
     print("You need to make sure to have the right fields. The website at")
@@ -161,27 +193,18 @@ parcel = {
 
 # Get recipient
 print("Recipient information")
-address_questions = [
-  {'type': 'input', 'name': 'name', 'message': "Name" },
-  {'type': 'input', 'name': 'street1', 'message': "Street Address" },
-  {'type': 'input', 'name': 'street2', 'message': "Street (line 2)" },
-  {'type': 'input', 'name': 'city', 'message': "City" },
-  {'type': 'input', 'name': 'state', 'message': "State",
-    'validate': lambda s: len(s)==2 or "2 letter abbreviations" },
-  {'type': 'input', 'name': 'zip', 'message': "ZIP" },
-  {'type': 'input', 'name': 'country', 'message': "Country Code" },
-  {'type': 'input', 'name': 'company', 'message': "Company" },
-  {'type': 'input', 'name': 'phone', 'message': "Phone" },
-  {'type': 'input', 'name': 'email', 'message': "E-Mail" },
-]
-address_response = prompt(address_questions)
+address_to = prompt_for_address()
+while not address_to.validation_results.is_valid:
+  if not display_messages(address_to.validation_results.messages,
+      "The validator thinks this destination address is invalid. Retry?",
+       onProblem=lambda: print_clean_json(address_to)):
+    sys.exit(1)
+  else:
+    address_to = prompt_for_address(priorAddress=address_to)
 
-address_to = shippo.Address.create(**address_response, validate=True)
-display_messages(address_to.validation_results.messages, "Are these address problems OK?",
-     onProblem=lambda: print_json(address_to))
-
-if not address_to.validation_results.is_valid:
-  prompt_to_continue("The validator thinks this destination address is invalid. Continue anyway?")
+if not display_messages(address_to.validation_results.messages, "Are these address problems OK?",
+                        onProblem=lambda: print_clean_json(address_to)):
+  sys.exit(0)
 
 customs_declaration=None
 
@@ -205,15 +228,14 @@ customs_declaration=None
 #     items= [customs_item]
 # )
 
-print("Destination Address:")
-print_json(address_to);
 print("Parcel:")
 print_json(parcel)
 if customs_declaration:
     print("Customs declaration:")
     print_json(customs_declaration)
 
-prompt_to_continue("Does this look acceptable?")
+if not prompt_to_continue("Does this parcel look acceptable?"):
+  sys.exit(0)
 
 # Creating the shipment object. async=False indicates that the function will wait until all
 # rates are generated before it returns.
@@ -227,14 +249,16 @@ shipment = shippo.Shipment.create(
     async=False
 )
 
-display_messages(shipment.messages, prompt="Are these shipment alerts OK?")
+if not display_messages(shipment.messages, prompt="Are these shipment alerts OK?"):
+  sys.exit(0)
 
 rate = choose_rate_for_shipment(shipment)
 print("Picked service {} {} for {} {} with est. transit time of {} days".format(rate['provider'],
     rate['servicelevel']['name'], rate['currency'], rate['amount'], rate['estimated_days']));
 
 print_json(rate)
-prompt_to_continue("Ready to purchase this rate?")
+if not prompt_to_continue("Ready to purchase this rate?"):
+  sys.exit(0)
 
 # Purchase the desired rate. async=False indicates that the function will wait until the
 # carrier returns a shipping label before it returns
@@ -243,7 +267,8 @@ print_json(transaction)
 
 finish_and_offer_to_print_transaction(transaction)
 
-prompt_to_continue("Would you like a return label?")
+if not prompt_to_continue("Would you like a return label?"):
+  sys.exit(0)
 
 shipment_return = shippo.Shipment.create(
     address_from = address_from,
