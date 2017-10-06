@@ -1,0 +1,14 @@
+api_key:
+ Test API: shippo_test_something_something
+ Production API: shippo_live_something_something
+
+from:
+  name: A Person
+  street1: 987 Main Street
+  street2: Suite 123
+  company: A Shipping Company
+  phone: +44 1234 56789
+  city: Gotham
+  state: Happy
+  zip: ALL HAIL
+  country: GB

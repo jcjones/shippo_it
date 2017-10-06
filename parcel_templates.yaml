@@ -1,0 +1,13 @@
+USPS_FlatRateEnvelope:
+ u: in
+ w: 12.5
+ l: 9.5
+ h: 0.75
+ template: true
+
+USPS_SmallFlatRateBox:
+ u: in
+ w: 8.69
+ l: 5.44
+ h: 1.75
+ template: true
