@@ -11,3 +11,10 @@ USPS_SmallFlatRateBox:
  l: 5.44
  h: 1.75
  template: true
+
+UPS_Express_Box_Large:
+ u: in
+ w: 18.0
+ l: 13.0
+ h: 3.0
+ template: true
