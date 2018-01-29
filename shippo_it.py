@@ -37,18 +37,30 @@ def display_messages(aMessages, prompt="Are these alerts okay?", onProblem=None)
 
   return True
 
+def format_address(aAddress):
+  return "{name}, {company}, {city}, {country}".format(**aAddress)
+
+def find_existing_address(aAddress):
+  all_addresses = shippo.Address.all()
+  for addr in all_addresses['results']:
+    for x in ['city', 'country', 'company', 'state', 'street1', 'zip', 'name']:
+      if addr[x] != aAddress[x]:
+        continue
+    return aAddress
+  return None
+
 def prompt_for_address(priorAddress={}):
   address_questions = [
     {'type': 'input', 'name': 'name', 'message': "Name" },
     {'type': 'input', 'name': 'street1', 'message': "Street Address" },
     {'type': 'input', 'name': 'street2', 'message': "Street (line 2)" },
+    {'type': 'input', 'name': 'street3', 'message': "Street (line 3)" },
     {'type': 'input', 'name': 'city', 'message': "City",
       'validate': lambda s: len(s)>=2 or "City must be at least 2 letters" },
-    {'type': 'input', 'name': 'state', 'message': "State",
-      'validate': lambda s: len(s)==2 or "2 letter abbreviations" },
-    {'type': 'input', 'name': 'zip', 'message': "ZIP" },
-    {'type': 'input', 'name': 'country', 'message': "Country Code",
-      'validate': lambda s: len(s)>=2 or "Country code must be at least 2 letters" },
+    {'type': 'input', 'name': 'state', 'message': "State" },
+    {'type': 'input', 'name': 'zip', 'message': "Postal Code" },
+    {'type': 'input', 'name': 'country', 'message': "Country Code (2-letter ISO)",
+      'validate': lambda s: len(s)==2 or "Country code must be 2 letters (ISO)" },
     {'type': 'input', 'name': 'company', 'message': "Company" },
     {'type': 'input', 'name': 'phone', 'message': "Phone" },
     {'type': 'input', 'name': 'email', 'message': "E-Mail" },
@@ -61,6 +73,68 @@ def prompt_for_address(priorAddress={}):
 
   address_response = prompt(address_questions)
   return shippo.Address.create(**address_response, validate=True)
+
+
+def prompt_for_customs_items(priorItems=[]):
+  # Only support one item at a time for now
+
+  print("Parcel Item #1")
+
+  customs_questions = [
+    {'type': 'input', 'name': 'description', 'message': "Item description" },
+    {'type': 'input', 'name': 'quantity', 'message': "Item quantity",
+     'validate': lambda s: float(s).is_integer() or "Must be an integer quantity" },
+    {'type': 'input', 'name': 'net_weight', 'message': "Item mass?",
+     'validate': lambda s: s.replace('.','',1).isdigit() or "Must be a numberical quantity"},
+    {'type': 'list', 'name': 'mass_unit', 'message': "Parcel mass units?",
+     'choices': ["oz", "lb", "kg"]},
+    {'type': 'input', 'name': 'value_amount', 'message': "Item value?",
+     'validate': lambda s: s.replace('.','',1).isdigit() or "Must be a numberical quantity"},
+    {'type': 'input', 'name': 'value_currency', 'message': "Item value currency (3 letter code)?",
+     'validate': lambda s: len(s)==3 or "Currency code must be 3 letter" },
+    {'type': 'input', 'name': 'origin_country', 'message': "Item origin Country Code (2-letter ISO)",
+      'validate': lambda s: len(s)==2 or "Country code must be 2 letters" },
+    {'type': 'input', 'name': 'tariff_number', 'message': "Item tariff number, or blank" },
+    {'type': 'input', 'name': 'sku_code', 'message': "Item SKU, or blank" },
+  ]
+
+  # Fill in defaults, if any
+  # for q in customs_questions:
+  #   if q['name'] in priorItems[0]:
+  #     q['default'] = priorCustoms[q['name']]
+
+  customs_response = prompt(customs_questions)
+  return [customs_response]
+
+def prompt_for_customs(priorCustoms={}):
+  items = []
+  if 'items' in priorCustoms:
+    items = priorCustoms['items']
+  items = prompt_for_customs_items(items)
+
+  print_json(items)
+
+  customs_questions = [
+    {'type': 'list', 'name': 'contents_type', 'message': "Type",
+      'choices': ["DOCUMENTS", "GIFT", "SAMPLE", "MERCHANDISE", "HUMANITARIAN_DONATION",
+                  "RETURN_MERCHANDISE", "OTHER"] },
+    {'type': 'input', 'name': 'contents_explanation', 'message': "Explanation of Contents (required if OTHER)" },
+    {'type': 'list', 'name': 'non_delivery_option', 'message': "In the event of non-delivery?",
+        'choices': ["ABANDON", "RETURN"] },
+    {'type': 'confirm', 'name': 'certify', 'message': "Do you Certify this as true?" },
+    {'type': 'input', 'name': 'certify_signer', 'message': "Name of certifier" },
+  ]
+
+  # Fill in defaults, if any
+  for q in customs_questions:
+    if q['name'] in priorCustoms:
+      q['default'] = priorCustoms[q['name']]
+
+  customs_response = prompt(customs_questions)
+  customs_response['items'] = items
+
+  print_clean_json(customs_response)
+  return shippo.CustomsDeclaration.create(**customs_response)
 
 def choose_rate_for_shipment(aShipmentObj):
     # Rates are stored in the `rates` array
@@ -91,6 +165,64 @@ def finish_and_offer_to_print_transaction(aTransaction):
     if not display_messages(aTransaction.messages, prompt="Failed to create the label"):
       sys.exit(0)
 
+def get_parcel_information():
+  parcel_choices = []
+  parcel_list = os.path.join(sys.path[0], 'parcel_templates.yaml')
+  with open(parcel_list, "r") as parcel_stream:
+    parcel_data = yaml.load(parcel_stream)
+
+    for key, value in parcel_data.items():
+      name = "[{template}] Unit={v[u]} L={v[l]} W={v[w]} H={v[h]}".format(template=key, v=value)
+      if value['template']:
+        value['template_name'] = key
+      parcel_choices.append({'name': name, 'value': value})
+
+
+  parcel_questions = []
+  parcel_template_answers = prompt([
+      {'type': 'confirm', 'name': 'template', 'message': "Use a parcel template?"},
+  ])
+  if parcel_template_answers['template']:
+    # Select from the template list
+    parcel_questions.append({'type': 'list',
+        'name': 'template',
+        'message': "What parcel template should we use?",
+        'choices': parcel_choices})
+  else:
+    # Custom questions
+    parcel_questions.append({'type': 'input', 'name': 'length', 'message': "Length?"})
+    parcel_questions.append({'type': 'input', 'name': 'width', 'message': "Width?"})
+    parcel_questions.append({'type': 'input', 'name': 'height', 'message': "Height?"})
+    parcel_questions.append({'type': 'list', 'name': 'distance_unit',
+      'message': "Parcel distance units?", 'choices': ["cm", "in"]})
+
+  # Standard questions
+  parcel_questions.append({'type': 'input', 'name': 'mass', 'message': "Parcel mass?"})
+  parcel_questions.append({'type': 'list', 'name': 'mass_unit',
+      'message': "Parcel mass units?", 'choices': ["oz", "lb", "kg"]})
+
+  parcel_response = prompt(parcel_questions)
+
+  # If they chose a template
+  if "template" in parcel_response:
+      parcel_response["length"] = parcel_response['template']['l']
+      parcel_response["width"] = parcel_response['template']['w']
+      parcel_response["height"] = parcel_response['template']['h']
+      parcel_response["distance_unit"] = parcel_response['template']['u']
+      parcel_response["template_name"] = parcel_response['template']['template_name']
+  else:
+      parcel_response["template_name"] = None
+
+  return {
+      "length": parcel_response['length'],
+      "width": parcel_response['width'],
+      "height": parcel_response['height'],
+      "distance_unit": parcel_response['distance_unit'],
+      "template": parcel_response['template_name'],
+      "weight": parcel_response['mass'],
+      "mass_unit": parcel_response['mass_unit']
+  }
+
 ##
 ## Main logic
 ##
@@ -120,10 +252,14 @@ with open(conf_file, "r") as conf_stream:
 
   # Set up sender address
   try:
-    config_data['from']['validate'] = True
-    address_from = shippo.Address.create(**config_data['from'])
-    if not display_messages(address_from.validation_results.messages, "Are these sender address problems OK?"):
-      sys.exit(0)
+    # Try to re-use old address
+    address_from = find_existing_address(config_data['from'])
+    if address_from is None:
+      # Create it
+      config_data['from']['validate'] = True
+      address_from = shippo.Address.create(**config_data['from'])
+      if not display_messages(address_from.validation_results.messages, "Are these sender address problems OK?"):
+        sys.exit(0)
   except:
     print("The config file [{}] does not contain the sender's address under the heading of 'from'".format(conf_file))
     print("You need to make sure to have the right fields. The website at")
@@ -131,108 +267,60 @@ with open(conf_file, "r") as conf_stream:
     print("")
     sys.exit(1)
 
-## Load parcel configuration
-print("Parcel information")
-
-parcel_choices = []
-parcel_list = os.path.join(sys.path[0], 'parcel_templates.yaml')
-with open(parcel_list, "r") as parcel_stream:
-  parcel_data = yaml.load(parcel_stream)
-
-  for key, value in parcel_data.items():
-    name = "[{template}] Unit={v[u]} L={v[l]} W={v[w]} H={v[h]}".format(template=key, v=value)
-    if value['template']:
-      value['template_name'] = key
-    parcel_choices.append({'name': name, 'value': value})
-
-
-parcel_questions = []
-parcel_template_answers = prompt([
-    {'type': 'confirm', 'name': 'template', 'message': "Use a parcel template?"},
-])
-if parcel_template_answers['template']:
-  # Select from the template list
-  parcel_questions.append({'type': 'list',
-      'name': 'template',
-      'message': "What parcel template should we use?",
-      'choices': parcel_choices})
-else:
-  # Custom questions
-  parcel_questions.append({'type': 'input', 'name': 'length', 'message': "Length?"})
-  parcel_questions.append({'type': 'input', 'name': 'width', 'message': "Width?"})
-  parcel_questions.append({'type': 'input', 'name': 'height', 'message': "Height?"})
-  parcel_questions.append({'type': 'list', 'name': 'distance_unit',
-    'message': "Parcel distance units?", 'choices': ["cm", "in"]})
-
-# Standard questions
-parcel_questions.append({'type': 'input', 'name': 'mass', 'message': "Parcel mass?"})
-parcel_questions.append({'type': 'list', 'name': 'mass_unit',
-    'message': "Parcel mass units?", 'choices': ["oz", "lb", "kg"]})
-
-parcel_response = prompt(parcel_questions)
-
-# If they chose a template
-if "template" in parcel_response:
-    parcel_response["length"] = parcel_response['template']['l']
-    parcel_response["width"] = parcel_response['template']['w']
-    parcel_response["height"] = parcel_response['template']['h']
-    parcel_response["distance_unit"] = parcel_response['template']['u']
-    parcel_response["template_name"] = parcel_response['template']['template_name']
-else:
-    parcel_response["template_name"] = None
-
-parcel = {
-    "length": parcel_response['length'],
-    "width": parcel_response['width'],
-    "height": parcel_response['height'],
-    "distance_unit": parcel_response['distance_unit'],
-    "template": parcel_response['template_name'],
-    "weight": parcel_response['mass'],
-    "mass_unit": parcel_response['mass_unit']
-}
-
 # Get recipient
 print("Recipient information")
-address_to = prompt_for_address()
-while not address_to.validation_results.is_valid:
-  if not display_messages(address_to.validation_results.messages,
-      "The validator thinks this destination address is invalid. Retry?",
-       onProblem=lambda: print_clean_json(address_to)):
-    sys.exit(1)
+address_to = None
+if prompt_to_continue("Choose an existing address?"):
+  choices = []
+
+  all_addresses = shippo.Address.all()
+  for addr in all_addresses['results']:
+    choices.append({'name': format_address(addr),
+                    'value': addr})
+  result = prompt({'type': 'list', 'name': 'chosen_address',
+                   'message': "Prior recipients", 'choices': choices})
+  address_to = result['chosen_address']
+
+else:
+  address_to = prompt_for_address()
+
+  if 'is_valid' not in address_to.validation_results:
+    if not prompt_to_continue("Could not validate address. Is that OK?"):
+      sys.exit(1)
   else:
-    address_to = prompt_for_address(priorAddress=address_to)
+    while not address_to.validation_results['is_valid']:
+      if not display_messages(address_to.validation_results.messages,
+          "The validator thinks this destination address is invalid. Retry?",
+           onProblem=lambda: print_clean_json(address_to)):
+        sys.exit(1)
+      else:
+        address_to = prompt_for_address(priorAddress=address_to)
 
-if not display_messages(address_to.validation_results.messages, "Are these address problems OK?",
-                        onProblem=lambda: print_clean_json(address_to)):
-  sys.exit(0)
+    if not display_messages(address_to.validation_results.messages, "Are these address problems OK?",
+                            onProblem=lambda: print_clean_json(address_to)):
+      sys.exit(0)
 
+  print("Stored address for {}:".format(format_address(address_to)))
+  print_clean_json(address_to)
+
+
+# Get international information... if needed
 customs_declaration=None
 
-# customs_item = {
-#     "description":"T-Shirt",
-#     "quantity":20,
-#     "net_weight":"1",
-#     "mass_unit":"lb",
-#     "value_amount":"200",
-#     "value_currency":"USD",
-#     "origin_country":"US",
-#     "tariff_number":"",
-# }
+if address_to['country'] != address_from['country'] and prompt_to_continue(
+              "Does this parcel need an international customs declaration?"):
+  customs_declaration = prompt_for_customs()
+  print("Customs declaration:")
+  print_json(customs_declaration)
 
-# customs_declaration = shippo.CustomsDeclaration.create(
-#     contents_type= 'MERCHANDISE',
-#     contents_explanation= 'T-Shirt purchase',
-#     non_delivery_option= 'RETURN',
-#     certify= True,
-#     certify_signer= 'Person Name',
-#     items= [customs_item]
-# )
+
+## Load parcel configuration
+print("Parcel information")
+parcel = get_parcel_information()
+
 
 print("Parcel:")
 print_json(parcel)
-if customs_declaration:
-    print("Customs declaration:")
-    print_json(customs_declaration)
 
 if not prompt_to_continue("Does this parcel look acceptable?"):
   sys.exit(0)
@@ -245,7 +333,7 @@ shipment = shippo.Shipment.create(
     address_from=address_from,
     address_to=address_to,
     parcels=[parcel],
-    # customs_declaration=customs_declaration,
+    customs_declaration=customs_declaration,
     async=False
 )
 
@@ -274,6 +362,7 @@ shipment_return = shippo.Shipment.create(
     address_from = address_from,
     address_to = address_to,
     parcels = [parcel],
+    customs_declaration=customs_declaration,
     extra = {'is_return': True},
     async = False
 )
