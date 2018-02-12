@@ -148,6 +148,9 @@ def choose_rate_for_shipment(aShipmentObj):
             desc += " [{}]".format(a)
         choices.append({'name': desc, 'value': rateObj, 'short': shortDesc})
 
+    if len(choices) == 0:
+      raise Exception("There are no rates available.")
+
     questions = [
       {'type': 'list', 'name': 'service', 'message': "What service do you want?", 'choices': choices}
     ]
@@ -224,6 +227,122 @@ def get_parcel_information():
   }
 
 ##
+## Action logic
+##
+
+def ship_item(address_from=None, address_to=None, customs_declaration=None):
+  # Get recipient
+  print("Recipient information")
+  if prompt_to_continue("Choose an existing address?"):
+    choices = {}
+
+    all_addresses = shippo.Address.all()
+    for addr in all_addresses['results']:
+      if format_address(addr) == format_address(address_from):
+        continue
+      choices[format_address(addr)] = {'name': format_address(addr),
+                                       'value': addr}
+    result = prompt({'type': 'list', 'name': 'chosen_address',
+                     'message': "Prior recipients", 'choices': choices.values()})
+    address_to = result['chosen_address']
+
+  else:
+    address_to = prompt_for_address()
+
+    if 'is_valid' not in address_to.validation_results:
+      if not prompt_to_continue("Could not validate address. Is that OK?"):
+        return False
+    else:
+      while not address_to.validation_results['is_valid']:
+        if not display_messages(address_to.validation_results.messages,
+            "The validator thinks this destination address is invalid. Retry?",
+             onProblem=lambda: print_clean_json(address_to)):
+          return False
+        else:
+          address_to = prompt_for_address(priorAddress=address_to)
+
+      if not display_messages(address_to.validation_results.messages, "Are these address problems OK?",
+                              onProblem=lambda: print_clean_json(address_to)):
+        return False
+
+    print("Stored address for {}:".format(format_address(address_to)))
+    print_clean_json(address_to)
+
+
+  # Get international information... if needed
+  if address_to['country'] != address_from['country'] and prompt_to_continue(
+                "Does this parcel need an international customs declaration?"):
+    customs_declaration = prompt_for_customs()
+    print("Customs declaration:")
+    print_json(customs_declaration)
+
+
+  ## Load parcel configuration
+  print("Parcel information")
+  parcel = get_parcel_information()
+
+
+  print("Parcel:")
+  print_json(parcel)
+
+  if not prompt_to_continue("Does this parcel look acceptable?"):
+    return False
+
+  # Creating the shipment object. async=False indicates that the function will wait until all
+  # rates are generated before it returns.
+  # The reference for the shipment object is here: https://goshippo.com/docs/reference#shipments
+  # By default Shippo API operates on an async basis. You can read about our async flow here: https://goshippo.com/docs/async
+  shipment = shippo.Shipment.create(
+      address_from=address_from,
+      address_to=address_to,
+      parcels=[parcel],
+      customs_declaration=customs_declaration,
+      async=False
+  )
+
+  if not display_messages(shipment.messages, prompt="Are these shipment alerts OK?"):
+    return False
+
+  rate = choose_rate_for_shipment(shipment)
+  print("Picked service {} {} for {} {} with est. transit time of {} days".format(rate['provider'],
+      rate['servicelevel']['name'], rate['currency'], rate['amount'], rate['estimated_days']));
+
+  print_json(rate)
+  if not prompt_to_continue("Ready to purchase this rate?"):
+    return False
+
+  # Purchase the desired rate. async=False indicates that the function will wait until the
+  # carrier returns a shipping label before it returns
+  transaction = shippo.Transaction.create(rate=rate.object_id, async=False)
+  print_json(transaction)
+
+  finish_and_offer_to_print_transaction(transaction)
+
+  if not prompt_to_continue("Would you like a return label?"):
+    return True
+
+  shipment_return = shippo.Shipment.create(
+      address_from = address_from,
+      address_to = address_to,
+      parcels = [parcel],
+      customs_declaration=customs_declaration,
+      extra = {'is_return': True},
+      async = False
+  )
+
+  return_rate = choose_rate_for_shipment(shipment_return)
+  print("Picked return service {} {} for {} {} with est. transit time of {} days".format(rate['provider'],
+      rate['servicelevel']['name'], rate['currency'], rate['amount'], rate['estimated_days']));
+
+  return_transaction = shippo.Transaction.create(rate=return_rate.object_id, async=False)
+
+  finish_and_offer_to_print_transaction(return_transaction)
+  return True
+
+def list_outgoing_items():
+  return False
+
+##
 ## Main logic
 ##
 
@@ -267,110 +386,14 @@ with open(conf_file, "r") as conf_stream:
     print("")
     sys.exit(1)
 
-# Get recipient
-print("Recipient information")
-address_to = None
-if prompt_to_continue("Choose an existing address?"):
-  choices = []
 
-  all_addresses = shippo.Address.all()
-  for addr in all_addresses['results']:
-    choices.append({'name': format_address(addr),
-                    'value': addr})
-  result = prompt({'type': 'list', 'name': 'chosen_address',
-                   'message': "Prior recipients", 'choices': choices})
-  address_to = result['chosen_address']
-
+action_question = {'type': 'list', 'name': 'action', 'message': "What do you want to do?",
+                   'choices': [{'value': 'ship', 'name': 'Ship a package'},
+                               {'value': 'list_outgoing', 'name': 'List sent packages'}]}
+action = prompt([action_question])['action']
+if action == "ship":
+  ship_item(address_from=address_from)
+elif action == "list_outgoing":
+  list_outgoing_items()
 else:
-  address_to = prompt_for_address()
-
-  if 'is_valid' not in address_to.validation_results:
-    if not prompt_to_continue("Could not validate address. Is that OK?"):
-      sys.exit(1)
-  else:
-    while not address_to.validation_results['is_valid']:
-      if not display_messages(address_to.validation_results.messages,
-          "The validator thinks this destination address is invalid. Retry?",
-           onProblem=lambda: print_clean_json(address_to)):
-        sys.exit(1)
-      else:
-        address_to = prompt_for_address(priorAddress=address_to)
-
-    if not display_messages(address_to.validation_results.messages, "Are these address problems OK?",
-                            onProblem=lambda: print_clean_json(address_to)):
-      sys.exit(0)
-
-  print("Stored address for {}:".format(format_address(address_to)))
-  print_clean_json(address_to)
-
-
-# Get international information... if needed
-customs_declaration=None
-
-if address_to['country'] != address_from['country'] and prompt_to_continue(
-              "Does this parcel need an international customs declaration?"):
-  customs_declaration = prompt_for_customs()
-  print("Customs declaration:")
-  print_json(customs_declaration)
-
-
-## Load parcel configuration
-print("Parcel information")
-parcel = get_parcel_information()
-
-
-print("Parcel:")
-print_json(parcel)
-
-if not prompt_to_continue("Does this parcel look acceptable?"):
-  sys.exit(0)
-
-# Creating the shipment object. async=False indicates that the function will wait until all
-# rates are generated before it returns.
-# The reference for the shipment object is here: https://goshippo.com/docs/reference#shipments
-# By default Shippo API operates on an async basis. You can read about our async flow here: https://goshippo.com/docs/async
-shipment = shippo.Shipment.create(
-    address_from=address_from,
-    address_to=address_to,
-    parcels=[parcel],
-    customs_declaration=customs_declaration,
-    async=False
-)
-
-if not display_messages(shipment.messages, prompt="Are these shipment alerts OK?"):
-  sys.exit(0)
-
-rate = choose_rate_for_shipment(shipment)
-print("Picked service {} {} for {} {} with est. transit time of {} days".format(rate['provider'],
-    rate['servicelevel']['name'], rate['currency'], rate['amount'], rate['estimated_days']));
-
-print_json(rate)
-if not prompt_to_continue("Ready to purchase this rate?"):
-  sys.exit(0)
-
-# Purchase the desired rate. async=False indicates that the function will wait until the
-# carrier returns a shipping label before it returns
-transaction = shippo.Transaction.create(rate=rate.object_id, async=False)
-print_json(transaction)
-
-finish_and_offer_to_print_transaction(transaction)
-
-if not prompt_to_continue("Would you like a return label?"):
-  sys.exit(0)
-
-shipment_return = shippo.Shipment.create(
-    address_from = address_from,
-    address_to = address_to,
-    parcels = [parcel],
-    customs_declaration=customs_declaration,
-    extra = {'is_return': True},
-    async = False
-)
-
-return_rate = choose_rate_for_shipment(shipment_return)
-print("Picked return service {} {} for {} {} with est. transit time of {} days".format(rate['provider'],
-    rate['servicelevel']['name'], rate['currency'], rate['amount'], rate['estimated_days']));
-
-return_transaction = shippo.Transaction.create(rate=return_rate.object_id, async=False)
-
-finish_and_offer_to_print_transaction(return_transaction)
+  raise Exception("Unexpected action: " + action)
