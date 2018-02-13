@@ -40,6 +40,9 @@ def display_messages(aMessages, prompt="Are these alerts okay?", onProblem=None)
 def format_address(aAddress):
   return "{name}, {company}, {city}, {country}".format(**aAddress)
 
+def format_parcel(aParcel):
+  return "[{template}] {length}{distance_unit} x {width}{distance_unit} x {height}{distance_unit}, {weight}{mass_unit}".format(**aParcel)
+
 def find_existing_address(aAddress):
   all_addresses = shippo.Address.all()
   for addr in all_addresses['results']:
@@ -282,8 +285,7 @@ def ship_item(address_from=None, address_to=None, customs_declaration=None):
   parcel = get_parcel_information()
 
 
-  print("Parcel:")
-  print_json(parcel)
+  print("Parcel: " + format_parcel(parcel))
 
   if not prompt_to_continue("Does this parcel look acceptable?"):
     return False
@@ -340,7 +342,29 @@ def ship_item(address_from=None, address_to=None, customs_declaration=None):
   return True
 
 def list_outgoing_items():
-  return False
+  all_transactions = shippo.Transaction.all()
+  for tx in all_transactions['results']:
+    if tx['object_state'] != "VALID":
+      continue
+
+    parcel = shippo.Parcel.retrieve(tx['parcel'])
+    rate = shippo.Rate.retrieve(tx['rate'])
+    shipment = shippo.Shipment.retrieve(rate['shipment'])
+
+    print(shipment['shipment_date'] + " To: " + format_address(shipment['address_to']) + " " + tx['status'])
+
+    print("Tracking number: {tracking_number}".format(**tx))
+    if tx['tracking_status'] != "UNKNOWN":
+      print("Status: {tracking_status} ETA: {eta}".format(**tx))
+      print("{tracking_url_provider}".format(**tx))
+    print("Parcel: " + format_parcel(parcel))
+    print("{provider} {servicelevel[name]}: {amount} {currency} (est. {estimated_days} days)".format(**rate))
+
+    if len(tx['messages']) > 0:
+      print_json(tx['messages'])
+    print("")
+
+  return True
 
 ##
 ## Main logic
