@@ -360,6 +360,13 @@ def list_outgoing_items():
     print("Parcel: " + format_parcel(parcel))
     print("{provider} {servicelevel[name]}: {amount} {currency} (est. {estimated_days} days)".format(**rate))
 
+    if shipment['customs_declaration']:
+      customs = shippo.CustomsDeclaration.retrieve(shipment['customs_declaration'])
+      print_json(customs)
+      for itemId in customs['items']:
+        item = shippo.CustomsItem.retrieve(itemId)
+        print_json(item)
+
     if len(tx['messages']) > 0:
       print_json(tx['messages'])
     print("")
