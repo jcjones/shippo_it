@@ -70,9 +70,10 @@ def prompt_for_address(priorAddress={}):
   ]
 
   # Fill in defaults, if any
-  for q in address_questions:
-    if q['name'] in priorAddress:
-      q['default'] = priorAddress[q['name']]
+  if priorAddress is not None:
+    for q in address_questions:
+      if q['name'] in priorAddress:
+        q['default'] = priorAddress[q['name']]
 
   address_response = prompt(address_questions)
   return shippo.Address.create(**address_response, validate=True)
@@ -229,48 +230,62 @@ def get_parcel_information():
       "mass_unit": parcel_response['mass_unit']
   }
 
+def get_address(noun="Addressee", choices_text="Choose an addressee", exclude_addr=None):
+  print("{} information".format(noun))
+  if prompt_to_continue("Choose an existing {}?".format(noun)):
+    choices = {}
+
+    all_addresses = shippo.Address.all()
+    for addr in all_addresses['results']:
+      if exclude_addr is not None and format_address(addr) == format_address(exclude_addr):
+        continue
+      choices[format_address(addr)] = {'name': format_address(addr),
+                                       'value': addr}
+    result = prompt({'type': 'list', 'name': 'chosen_address',
+                     'message': choices_text, 'choices': choices.values()})
+
+    return result['chosen_address']
+
+  # Otherwise, let's prompt and enter a loop.
+  address = None
+  keepGoing = False
+  while address is None or keepGoing:
+    address = prompt_for_address(priorAddress=address)
+
+    if 'is_valid' not in address.validation_results:
+      if not prompt_to_continue("Could not validate address. Is that OK?"):
+        keepGoing = True
+        continue
+
+    if not address.validation_results['is_valid']:
+      if display_messages(address.validation_results.messages,
+          "The validator thinks this {} address is invalid. Retry? (No will abort)".format(noun),
+           onProblem=lambda: print_clean_json(address)):
+        keepGoing = True
+        continue
+      else:
+        sys.exit(0)
+
+    if len(address.validation_results.messages) > 0:
+      if not display_messages(address.validation_results.messages, "Are these address problems OK?",
+                              onProblem=lambda: print_clean_json(address)):
+        keepGoing = True
+
+  print("Stored {} address for {}:".format(noun, format_address(address)))
+  print_clean_json(address)
+  return address
+
 ##
 ## Action logic
 ##
 
 def ship_item(address_from=None, address_to=None, customs_declaration=None):
+  while address_from is None:
+    address_from = get_address(noun="Sender", choices_text="Prior senders", exclude_addr=address_to)
+
   # Get recipient
-  print("Recipient information")
-  if prompt_to_continue("Choose an existing address?"):
-    choices = {}
-
-    all_addresses = shippo.Address.all()
-    for addr in all_addresses['results']:
-      if format_address(addr) == format_address(address_from):
-        continue
-      choices[format_address(addr)] = {'name': format_address(addr),
-                                       'value': addr}
-    result = prompt({'type': 'list', 'name': 'chosen_address',
-                     'message': "Prior recipients", 'choices': choices.values()})
-    address_to = result['chosen_address']
-
-  else:
-    address_to = prompt_for_address()
-
-    if 'is_valid' not in address_to.validation_results:
-      if not prompt_to_continue("Could not validate address. Is that OK?"):
-        return False
-    else:
-      while not address_to.validation_results['is_valid']:
-        if not display_messages(address_to.validation_results.messages,
-            "The validator thinks this destination address is invalid. Retry?",
-             onProblem=lambda: print_clean_json(address_to)):
-          return False
-        else:
-          address_to = prompt_for_address(priorAddress=address_to)
-
-      if not display_messages(address_to.validation_results.messages, "Are these address problems OK?",
-                              onProblem=lambda: print_clean_json(address_to)):
-        return False
-
-    print("Stored address for {}:".format(format_address(address_to)))
-    print_clean_json(address_to)
-
+  while address_to is None:
+    address_to = get_address(noun="Recipient", choices_text="Prior recipients", exclude_addr=address_from)
 
   # Get international information... if needed
   if address_to['country'] != address_from['country'] and prompt_to_continue(
@@ -279,11 +294,9 @@ def ship_item(address_from=None, address_to=None, customs_declaration=None):
     print("Customs declaration:")
     print_json(customs_declaration)
 
-
   ## Load parcel configuration
   print("Parcel information")
   parcel = get_parcel_information()
-
 
   print("Parcel: " + format_parcel(parcel))
 
@@ -379,7 +392,7 @@ def list_outgoing_items():
 
 conf_file = os.path.join(Path.home(), ".shippo_it.yaml")
 
-address_from = None
+address_home = None
 # Load config file
 with open(conf_file, "r") as conf_stream:
   config_data = yaml.load(conf_stream)
@@ -403,12 +416,12 @@ with open(conf_file, "r") as conf_stream:
   # Set up sender address
   try:
     # Try to re-use old address
-    address_from = find_existing_address(config_data['from'])
-    if address_from is None:
+    address_home = find_existing_address(config_data['from'])
+    if address_home is None:
       # Create it
       config_data['from']['validate'] = True
-      address_from = shippo.Address.create(**config_data['from'])
-      if not display_messages(address_from.validation_results.messages, "Are these sender address problems OK?"):
+      address_home = shippo.Address.create(**config_data['from'])
+      if not display_messages(address_home.validation_results.messages, "Are these sender address problems OK?"):
         sys.exit(0)
   except:
     print("The config file [{}] does not contain the sender's address under the heading of 'from'".format(conf_file))
@@ -420,11 +433,19 @@ with open(conf_file, "r") as conf_stream:
 
 action_question = {'type': 'list', 'name': 'action', 'message': "What do you want to do?",
                    'choices': [{'value': 'ship', 'name': 'Ship a package'},
+                               {'value': 'return', 'name': 'Produce a return label'},
                                {'value': 'list_outgoing', 'name': 'List sent packages'}]}
-action = prompt([action_question])['action']
-if action == "ship":
-  ship_item(address_from=address_from)
-elif action == "list_outgoing":
-  list_outgoing_items()
-else:
-  raise Exception("Unexpected action: " + action)
+try:
+  action = prompt([action_question])['action']
+  if action == "ship":
+    ship_item(address_from=address_home)
+  if action == "return":
+    ship_item(address_to=address_home)
+  elif action == "list_outgoing":
+    list_outgoing_items()
+  else:
+    raise Exception("Unexpected action: " + action)
+except KeyError:
+  pass
+except EOFError:
+  pass
