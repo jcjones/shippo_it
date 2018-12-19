@@ -439,7 +439,7 @@ try:
   action = prompt([action_question])['action']
   if action == "ship":
     ship_item(address_from=address_home)
-  if action == "return":
+  elif action == "return":
     ship_item(address_to=address_home)
   elif action == "list_outgoing":
     list_outgoing_items()
