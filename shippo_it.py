@@ -267,9 +267,8 @@ def get_address(noun="Addressee", choices_text="Choose an addressee", exclude_ad
         sys.exit(0)
 
     if len(address.validation_results.messages) > 0:
-      if not display_messages(address.validation_results.messages, "Are these address problems OK?",
-                              onProblem=lambda: print_clean_json(address)):
-        keepGoing = True
+        keepGoing = not display_messages(address.validation_results.messages, "Are these address problems OK?",
+                                         onProblem=lambda: print_clean_json(address))
 
   print("Stored {} address for {}:".format(noun, format_address(address)))
   print_clean_json(address)
@@ -423,11 +422,12 @@ with open(conf_file, "r") as conf_stream:
       address_home = shippo.Address.create(**config_data['from'])
       if not display_messages(address_home.validation_results.messages, "Are these sender address problems OK?"):
         sys.exit(0)
-  except:
+  except Exception as e:
     print("The config file [{}] does not contain the sender's address under the heading of 'from'".format(conf_file))
     print("You need to make sure to have the right fields. The website at")
     print("https://goshippo.com/docs/reference#addresses has a list of those fields." )
     print("")
+    print(e)
     sys.exit(1)
 
 
