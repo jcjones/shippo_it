@@ -1,3 +1,4 @@
-shippo>=1.5.1
+shippo==1.5.1
 whaaaaat>=0.5.2
 PyYAML>=3.12
+prompt_toolkit==1.0.15
