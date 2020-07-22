@@ -394,7 +394,7 @@ conf_file = os.path.join(Path.home(), ".shippo_it.yaml")
 address_home = None
 # Load config file
 with open(conf_file, "r") as conf_stream:
-  config_data = yaml.load(conf_stream)
+  config_data = yaml.load(conf_stream, Loader=yaml.SafeLoader)
 
   # Determine the available API keys
   api_keys = []
